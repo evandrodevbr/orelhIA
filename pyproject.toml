@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orelhIA"
+version = "3.0.0"
+description = "MCP server for local audio transcription via Parakeet TDT — a orelha (the ear) that your AI agents always needed"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Evandro", email = "evandro@example.com"},
+]
+keywords = ["mcp", "orelhIA", "parakeet", "transcription", "asr", "stt", "pt-br", "ptbr", "portuguese", "brazilian", "speech-to-text", "docker", "local-first", "offline"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "mcp[cli]>=1.0.0",
+]
+
+[project.optional-dependencies]
+record = ["pyaudio>=0.2.11"]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "mypy>=1.0",
+    "ruff>=0.1",
+]
+
+[project.scripts]
+orelhIA = "server:main"
+orelhIA-bootstrap = "parakeet_bootstrap:main"
+orelhIA-cli = "orelhIA.cli:main"
+
+[project.urls]
+"Source" = "https://github.com/evandro/orelhIA"
+"Bug Reports" = "https://github.com/evandro/orelhIA/issues"
+"Parakeet" = "https://github.com/speaches-ai/speaches"
+
+[tool.setuptools]
+py-modules = ["server", "parakeet_bootstrap"]
+
+[tool.setuptools.package-data]
+"" = ["README.md", "LICENSE", "CHANGELOG.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".pytest_cache", "__pycache__", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "PT", "RUF"]
+ignore = ["E501", "B008", "RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "PT011"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.10"
+strict_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true
