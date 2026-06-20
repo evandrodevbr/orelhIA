@@ -79,12 +79,39 @@ flowchart LR
 
 ### 2. Instalação
 
-```bash
-# Clone (ou copie o diretório orelhIA/)
-cd orelhIA
+**One-liner (recomendado):**
 
-# Edite
-pip install -e ".[dev,record]"
+```bash
+# Linux/macOS
+curl -fsSL https://raw.githubusercontent.com/evandrodevbr/orelhIA/main/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/evandrodevbr/orelhIA/main/install.ps1 | iex
+```
+
+**Manual (qualquer plataforma, com [uv](https://docs.astral.sh/uv/)):**
+
+```bash
+git clone https://github.com/evandrodevbr/orelhIA.git
+cd orelhIA
+uv sync --extra dev --extra record     # instala deps no .venv
+uv run python -m parakeet_bootstrap    # instala Docker + container
+```
+
+**Atalhos (Make / uv direto):**
+
+```bash
+# Make (Unix-like, ou GnuWin32 no Windows)
+make dev        # install + bootstrap + test
+make test       # pytest
+make lint       # ruff check
+make health     # check backend
+
+# uv direto (sem make, funciona em qualquer shell)
+uv sync                          # install
+uv run pytest                    # tests
+uv run python -m orelhIA         # MCP server (stdio)
+uv run python -m orelhIA.cli audio.ogg -l pt  # CLI standalone
 ```
 
 ### 3. Configure o MCP client

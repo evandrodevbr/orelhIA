@@ -1,11 +1,7 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "orelhIA"
 version = "3.0.0"
-description = "MCP server for local audio transcription via Parakeet TDT — a orelha (the ear) that your AI agents always needed"
+description = "MCP server for local audio transcription via Parakeet TDT - a orelha (the ear) that your AI agents always needed"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -38,26 +34,15 @@ dev = [
     "ruff>=0.1",
 ]
 
-[project.scripts]
-orelhIA = "server:main"
-orelhIA-bootstrap = "parakeet_bootstrap:main"
-orelhIA-cli = "orelhIA.cli:main"
-
 [project.urls]
-"Source" = "https://github.com/evandro/orelhIA"
-"Bug Reports" = "https://github.com/evandro/orelhIA/issues"
+"Source" = "https://github.com/evandrodevbr/orelhIA"
+"Bug Reports" = "https://github.com/evandrodevbr/orelhIA/issues"
 "Parakeet" = "https://github.com/speaches-ai/speaches"
-
-[tool.setuptools]
-py-modules = ["server", "parakeet_bootstrap"]
-
-[tool.setuptools.package-data]
-"" = ["README.md", "LICENSE", "CHANGELOG.md"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-exclude = [".pytest_cache", "__pycache__", "build", "dist"]
+exclude = [".pytest_cache", "__pycache__", "build", "dist", ".venv"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "PT", "RUF"]
