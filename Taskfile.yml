@@ -1,0 +1,75 @@
+# orelhIA Taskfile (alternativa cross-platform ao Makefile)
+# https://taskfile.dev
+# Install: https://taskfile.dev/installation
+# Usage:   task dev / task test / task bootstrap
+
+version: '3'
+
+vars:
+  PYTHON: '{{default "python3.12" .PYTHON}}'
+
+tasks:
+  default:
+    cmds:
+      - task --list
+    silent: true
+
+  install:
+    desc: Instala dependências (uv sync --extra dev --extra record)
+    cmds:
+      - uv sync --extra dev --extra record
+
+  dev:install
+    desc: Setup completo: install + bootstrap + smoke test
+    cmds:
+      - task: install
+      - task: bootstrap
+      - task: test
+
+  test:
+    desc: Roda pytest
+    cmds:
+      - uv run pytest tests/ -v
+
+  lint:
+    desc: Roda ruff check
+    cmds:
+      - uv run ruff check server.py parakeet_bootstrap.py orelhIA/ tests/
+
+  format:
+    desc: Roda ruff format
+    cmds:
+      - uv run ruff format server.py parakeet_bootstrap.py orelhIA/ tests/
+
+  clean:
+    desc: Remove cache e build artifacts
+    cmds:
+      - rm -rf .pytest_cache .ruff_cache __pycache__ */__pycache__ */*/__pycache__
+      - rm -rf .venv dist build *.egg-info
+
+  run:
+    desc: Roda MCP server (stdio, pra usar com pi)
+    cmds:
+      - uv run python -m orelhIA
+
+  cli:
+    desc: Roda CLI standalone. Uso: task cli AUDIO=audio.ogg [LANG=pt]
+    cmds:
+      - uv run python -m orelhIA.cli {{.AUDIO}} -l {{default "pt" .LANG}}
+
+  bootstrap:
+    desc: Instala Docker + container Parakeet (idempotente)
+    cmds:
+      - uv run python -m parakeet_bootstrap
+
+  health:
+    desc: Health check do backend
+    cmds:
+      - uv run python -c "import orelhIA; h = orelhIA.health(); print('ok:', h.get('ok')); print('models:', h.get('models', []))"
+
+  all:
+    desc: Tudo: dev + test + lint
+    cmds:
+      - task: dev
+      - task: test
+      - task: lint
