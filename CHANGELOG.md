@@ -5,6 +5,23 @@ All notable changes to **orelhIA** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`mcp` 2.x quebrava o servidor**: `mcp[cli]` sem teto de versão resolvia para a 2.x, que renomeou `FastMCP` para `MCPServer`. Dependência fixada em `mcp>=1.0,<2`.
+- **`python -m orelhIA` não rodava**: não existia `orelhIA/__main__.py`; adicionado o entrypoint stdio que o README, Makefile e scripts de install referenciam.
+- **Pacote instalado não importava fora do diretório do repo**: `orelhIA/__init__.py` reexporta `server.py` (módulo da raiz do repo), que não era instalado. Adicionados `[build-system]` e `[tool.setuptools] py-modules = ["server", "parakeet_bootstrap"]`.
+- **`NameError` no bootstrap Linux**: `parakeet_bootstrap.py` usava `Path` sem importar `pathlib`.
+- **`Taskfile.yml` era YAML inválido**: chave `dev:install` sem valor e `desc` com `: ` sem aspas.
+- **Métricas contavam requests em dobro** em cache hit e em erros (o `record_request` era chamado no início e de novo no fim do tool); agora cada chamada é contada uma vez, no desfecho.
+- **`record_audio` gravava o WAV duas vezes** quando `output_path` era informado.
+- E-mail placeholder `evandro@example.com` trocado pelo endereço real em `pyproject.toml` e `CONTRIBUTING.md`.
+
+### Changed
+- `ruff check` e `mypy` limpos (ordenação de imports, tipagem PEP 604, `__all__` ordenado, per-file-ignores para `N999`/`E402`).
+- `tests/test_parakeet_bootstrap.py`: `test_bootstrap_rejects_unknown_os` agora também mocka `_linux_distro` (falhava em qualquer Linux com Docker instalado).
+- README reescrito (pt-BR e inglês) com comandos verificados, tabelas de tools/CLI/env vars e limitações reais.
+
 ## [3.0.0] — 2026-06-20
 
 ### Added

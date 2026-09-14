@@ -3,8 +3,8 @@
 # Usage: ./install.sh
 # Or remotely: curl -fsSL https://raw.githubusercontent.com/evandrodevbr/orelhIA/main/install.sh | bash
 #
-# Requisitos: uv (https://docs.astral.sh/uv/) e Docker Desktop
-# Funciona em Linux e macOS (WIP). Para Windows, use install.ps1 ou WSL.
+# Requisitos: uv (https://docs.astral.sh/uv/) e Docker
+# Linux e Windows (via install.ps1 ou WSL). macOS não é suportado pelo bootstrap.
 
 set -euo pipefail
 

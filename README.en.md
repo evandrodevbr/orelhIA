@@ -1,286 +1,221 @@
 # orelhIA
 
-> **Local audio transcription, fast and private — for MCP agents.**
->
-> orelhIA · Parakeet TDT · Docker · LRU Cache · VAD · Metrics · Native PT-BR
+**MCP server (stdio) that transcribes local audio to text with Parakeet TDT running on your own machine, nothing leaves it.**
 
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python)](https://python.org)
-[![MCP](https://img.shields.io/badge/MCP-1.0%2B-purple)](https://modelcontextprotocol.io)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![Tests](https://img.shields.io/badge/tests-26%20passing-brightgreen)](./tests/)
-[![Backend: Parakeet](https://img.shields.io/badge/backend-Parakeet%20TDT-orange)](https://github.com/speaches-ai/speaches)
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
+![MCP](https://img.shields.io/badge/MCP-stdio%20server-6E56CF)
+![Backend](https://img.shields.io/badge/backend-Parakeet%20TDT-orange)
+![Tests](https://img.shields.io/badge/tests-26%20passing-brightgreen)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-[🇧🇷 **Português**](./README.md) · [🇺🇸 **English**](#english) · [📐 **Architecture**](./docs/ARCHITECTURE.md) · [🤝 **Contributing**](./CONTRIBUTING.md)
+[🇧🇷 Português](./README.md) · [🇺🇸 English](./README.en.md) · [Architecture](./docs/ARCHITECTURE.md) · [Contributing](./CONTRIBUTING.md)
 
----
+## About
 
-# English
+Sending audio to a paid API is the usual way to get a transcript. orelhIA takes the local route: it is an MCP server that exposes transcription tools to agents (Claude, pi, IDEs) and talks to a Parakeet TDT backend running in Docker on the same machine. The agent calls `transcribe_file("/tmp/audio.ogg")` and gets the text back, with an on-disk cache to avoid re-transcribing the same audio, optional VAD to trim silence, usage metrics and direct microphone recording.
 
-## ⚡ TL;DR
+## How it works
 
-```bash
-# 1. Install (after the MCP server is configured)
-pip install -e ".[dev,record]"
-
-# 2. Bootstrap the Parakeet container (idempotent — Docker + image + container)
-python -m parakeet_bootstrap
-
-# 3. Transcribe!
-python cli/whisper audio.ogg -l pt
-# → "Olá, isto é um teste do orelhIA"
+```
+MCP agent (Claude, pi, IDE)
+        │  JSON-RPC over stdio
+        ▼
+orelhIA (server.py, FastMCP, 7 tools)
+        │  multipart POST to /v1/audio/transcriptions (OpenAI-compatible API)
+        ▼
+local transcription backend (Parakeet TDT in Docker)
+  parakeet-ptbr :8022  (CPU)   or   parakeet-gpu :5092  (CUDA)
+        ▲
+        └── on-disk LRU cache (~/.orelhIA/cache, key = SHA-256 of audio + params)
 ```
 
-Via MCP (from your agent):
+- The server speaks MCP over stdio: no HTTP port of its own, the MCP client spawns the process.
+- `transcribe_file` validates (path, format, size), checks the LRU cache by content hash, applies energy-based VAD when requested and POSTs multipart to the backend, retrying on 5xx.
+- `transcribe_url` downloads public http(s) URLs behind an SSRF guard (each redirect hop is revalidated).
+- `record_audio` records from the microphone through PyAudio, writes a 16-bit PCM WAV and transcribes it.
+- `bootstrap_parakeet` (and `python -m parakeet_bootstrap`) handles the Docker lifecycle idempotently: Docker present, daemon running, image present, container running, `/health` healthy.
 
-```python
-bootstrap_parakeet()        # install and start (idempotent)
-transcribe_file("/tmp/audio.ogg", language="pt")
-# → {"text": "Olá, ...", "language": "pt", "duration": 4.5, "_meta": {...}}
-```
+## Stack
 
----
-
-## ✨ Features
-
-| Category | What you get |
+| Layer | Choice |
 |---|---|
-| **Transcription** | local file · URL · microphone · with or without VAD |
-| **Models** | 4 Parakeet TDT models (CPU + GPU CUDA) |
-| **Backend** | Parakeet TDT 0.6B v3, **native PT-BR** (Alefiury/TAGARELA) |
-| **Performance** | GPU 5-10× faster than CPU · LRU cache 18,000× speedup on hits |
-| **Security** | SSRF guard · safe redirect handler · MIME map · size limit · FD-safe temp |
-| **Observability** | in-memory metrics (counters, latency, cache hit rate) |
-| **DevEx** | stdlib-only where possible · type hints · pytest · ruff + mypy |
-| **Idempotency** | bootstrap re-detects Docker, image, container, daemon |
+| Language | Python 3.10+ (tested on 3.13) |
+| Protocol | MCP over stdio, `mcp[cli]` SDK `>=1.0,<2` (FastMCP) |
+| Transcription backend | Parakeet TDT 0.6B v3 (ONNX) in a Docker container, served over an OpenAI-compatible `/v1/audio/transcriptions` API; Whisper-compatible backends (e.g. Speaches) also work |
+| Cache | On-disk LRU (`~/.orelhIA/cache/index.json`), SHA-256 key |
+| VAD | Energy-based, stdlib only (`struct` + `wave`), no extra dependency |
+| Recording | PyAudio (`record` extra) |
+| Tests | pytest + `unittest.mock` (no network, no Docker) |
+| Quality | ruff (lint/format) and mypy, configured in `pyproject.toml` |
+| Packages | uv (`uv sync`, `uv build`); `pip install -e .` works too |
+| Bootstrap | `parakeet_bootstrap.py` shelling out to the Docker CLI |
 
----
+## Requirements
 
-## 🏗 Architecture
+- Python `>=3.10`
+- Docker (Engine or Desktop) with the daemon running, for the transcription backend
+- A backend image available on the machine (the repository ships no Dockerfile; the default name is `parakeet-tdt:ptbr-cpu`, configurable)
+- Disk space for the backend image (the CPU image used in testing is ~10 GB)
+- Optional: PyAudio and a microphone, only for `record_audio` (`record` extra)
 
-```mermaid
-flowchart LR
-  A[MCP Agent] -->|stdio JSON-RPC| B[orelhIA]
-  B -->|loopback| C[parakeet-ptbr :8022]
-  B -->|loopback| D[parakeet-gpu :5092]
-  B --> E[(~/.orelhIA/cache/)]
-  B --> F[/Metrics/]
-```
+## Quick start
 
-> See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for full diagrams (sequence, layered, security).
-
----
-
-## 🚀 Quick start
-
-### 1. Prerequisites
-
-- **Python 3.10+**
-- **Docker Desktop** (Windows/macOS) or **Docker Engine** (Linux)
-- **4 GB RAM** minimum (8 GB recommended for the large model)
-- **NVIDIA GPU optional** (CUDA 12.1+ for 5-10× speedup)
-
-### 2. Installation
+Commands below were executed and verified in this repository (Linux, Python 3.13, uv):
 
 ```bash
-# Clone (or copy the orelhIA/ directory)
+git clone https://github.com/evandrodevbr/orelhIA.git
 cd orelhIA
 
-# Editable install
-pip install -e ".[dev,record]"
+# installs the project (editable) + dev and recording extras into .venv
+uv sync --extra dev --extra record
+# pip alternative:
+# pip install -e ".[dev,record]"
+
+# idempotent backend bring-up (Docker + image + container + health)
+uv run python -m parakeet_bootstrap
+# if your image/container/port differ:
+# uv run python -m parakeet_bootstrap --image parakeet-tdt:cpu --container parakeet-cpu --port 5092
+
+# sanity check
+uv run python -m orelhIA.cli --health
+
+# transcribe
+uv run python -m orelhIA.cli audio.ogg -l pt
 ```
 
-### 3. Configure the MCP client
-
-Add to your `~/.pi/agent/mcp.json` (or equivalent):
+Register the MCP server in your client (config tested with an `initialize` and `tools/list` handshake):
 
 ```json
 {
   "mcpServers": {
-    "whisper": {
-      "command": "C:/Users/Evandro/AppData/Local/Programs/Python/Python312/python.exe",
-      "args": ["C:/Users/Evandro/.pi/agent/mcp-servers/whisper/server.py"],
-      "description": "Parakeet TDT transcription via parakeet-gpu container (RTX 3070, CUDA). v3.0",
-      "timeout": 180,
-      "lifecycle": "lazy",
-      "idleTimeout": 10,
-      "directTools": true,
-      "environment": {
-        "ORELHIA_BASE_URL": "http://localhost:5092",
-        "ORELHIA_MODEL": "alefiury/parakeet-tdt-0.6b-v3-ptBR-TAGARELA-onnx",
-        "ORELHIA_TIMEOUT": "120",
-        "ORELHIA_MAX_BYTES": "26214400",
-        "ORELHIA_CACHE_DIR": "C:/Users/Evandro/.orelhIA/cache",
-        "ORELHIA_CACHE_MAX_ENTRIES": "128"
-      }
+    "orelhIA": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/orelhIA", "run", "python", "-m", "orelhIA"]
     }
   }
 }
 ```
 
-### 4. Start the backend (idempotent)
+`Makefile` shortcuts (tested): `make test`, `make lint`, `make health`, `make run` (MCP over stdio), `make bootstrap`. `Taskfile.yml` is the cross-platform alternative (YAML validated; the `task` runner was not installed in the verification environment).
 
-```bash
-python -m parakeet_bootstrap
-```
+## Usage
 
-Expected output:
-
-```
-[  5%] docker.check: Verificando Docker...
-[ 15%] docker.check: Docker já instalado e rodando
-[ 25%] image.check: Verificando imagem parakeet-tdt:ptbr-cpu...
-[ 50%] image.check: Imagem parakeet-tdt:ptbr-cpu já presente
-[ 80%] container.reuse: Container parakeet-ptbr já rodando, reusando
-[ 75%] health.wait: Aguardando http://localhost:8022/health ficar healthy...
-[  95%] health.wait: healthy após 1 tentativas
-[100%] done: Bootstrap completo
-
-[OK] parakeet rodando em http://localhost:8022
-```
-
-### 5. Use it!
-
-```bash
-# CLI
-python cli/whisper audio.ogg -l pt
-
-# MCP (via agent)
-transcribe_file("audio.ogg", language="pt")
-```
-
----
-
-## 🛠 Tools (MCP)
+### MCP tools
 
 | Tool | What it does | Parameters |
 |---|---|---|
-| `health()` | Backend status + features | — |
-| `transcribe_file(path, language?, model?, format?, preprocess?)` | Local file → text | `path` (required), others optional |
-| `transcribe_url(url, language?, model?)` | HTTP(S) URL → text | `url` (required) |
-| `record_audio(seconds, output_path?, language?, model?, sample_rate?)` | Microphone → text | `seconds` (1-600) |
-| `get_metrics()` | Counters, latency, cache hit rate | — |
-| `clear_cache()` | Clear LRU cache | — |
-| `bootstrap_parakeet(port?, image?, container?)` | Install Docker + container (idempotent) | all optional |
+| `health()` | Backend status + features (tries `/v1/models`, falls back to `/health`) | none |
+| `transcribe_file(path, language?, model?, response_format?, preprocess?)` | Local file to text | `path` required; `response_format`: `json`/`text`/`srt`/`vtt`; `preprocess`: `none`/`vad` |
+| `transcribe_url(url, language?, model?)` | Downloads a public http(s) URL and transcribes it | `url` required |
+| `record_audio(seconds, output_path?, language?, model?, sample_rate?)` | Records from the microphone and transcribes | `seconds` from 1 to 600 |
+| `get_metrics()` | Counters, latency, cache hit rate, bytes processed | none |
+| `clear_cache()` | Clears the LRU cache and returns how many entries were removed | none |
+| `bootstrap_parakeet(port?, image?, container?)` | Docker + image + container, idempotent | all optional |
 
-### Example: transcription with VAD
+The server identifies itself as `whisper` in the MCP handshake (name inherited from earlier versions).
 
-```python
-transcribe_file(
-    path="audio_with_silence.wav",
-    language="pt",
-    preprocess="vad",  # removes silence before transcribing
-)
-```
-
-### Example: `get_metrics()` response
-
-```json
-{
-  "uptime_seconds": 3600.5,
-  "requests": {
-    "total": 150, "success": 147, "error": 3,
-    "by_tool": {"transcribe_file": 120, "transcribe_url": 25, "record_audio": 3, "health": 2}
-  },
-  "cache": {"hits": 35, "misses": 85, "hit_rate": 0.29},
-  "latency": {"total_ms": 180000.0, "avg_ms": 1200.0},
-  "bytes_processed": 52428800
-}
-```
-
----
-
-## 🐳 Bootstrap (install Parakeet)
-
-The `parakeet_bootstrap.py` script is **idempotent** — run it as many times as you want, no side effects.
-
-| OS | Support | How it installs Docker |
-|---|---|---|
-| Windows 10/11 | ✅ | `winget` (or `choco` as fallback) |
-| Linux (any) | ✅ | official `get.docker.com` script (with download + sanity cap) |
-| macOS | ❌ | not supported by design |
-
-**As MCP tool:** `bootstrap_parakeet()`  
-**As CLI:** `python -m parakeet_bootstrap`
-
-Auto-detects: Docker installed, daemon running, image present, container healthy.
-
----
-
-## ⚙️ Configuration (env vars)
-
-| Var | Default | Description |
-|---|---|---|
-| `ORELHIA_BASE_URL` | `http://localhost:5092` | Backend URL (GPU) |
-| `ORELHIA_MODEL` | `alefiury/parakeet-tdt-0.6b-v3-ptBR-TAGARELA-onnx` | Default model |
-| `ORELHIA_TIMEOUT` | `120` | Timeout (seconds) |
-| `ORELHIA_MAX_BYTES` | `26214400` (25 MB) | Max file size |
-| `ORELHIA_ALLOW_PRIVATE_URLS` | `false` | Disable SSRF guard (dev only) |
-| `ORELHIA_CACHE_DIR` | `~/.orelhIA/cache` | LRU cache directory |
-| `ORELHIA_CACHE_MAX_ENTRIES` | `128` | Max cache entries |
-| `ORELHIA_VAD_RMS_THRESHOLD` | `0.01` | VAD RMS threshold |
-| `ORELHIA_RECORD_SAMPLE_RATE` | `16000` | Microphone sample rate |
-| `ORELHIA_LOG_LEVEL` | `INFO` | DEBUG / INFO / WARNING / ERROR |
-
----
-
-## 🧪 Tests
+### CLI
 
 ```bash
-pytest                                    # 26 tests
-pytest tests/test_parakeet_bootstrap.py   # just bootstrap
-pytest --cov=.                            # with coverage
+python -m orelhIA.cli audio.ogg -l pt              # text
+python -m orelhIA.cli audio.wav --format json      # full result
+python -m orelhIA.cli audio.wav --preprocess vad   # trim silence first
+python -m orelhIA.cli https://host/audio.ogg --url -l pt
+python -m orelhIA.cli --record 5 --save speech.wav # microphone for 5s
+python -m orelhIA.cli --health | --metrics | --clear-cache
 ```
 
-Stack: `pytest` + `unittest.mock` (no network, no Docker required).
+| Flag | Effect |
+|---|---|
+| `-l, --language` | ISO-639-1 code (`pt`, `en`, ...) |
+| `-m, --model` | Backend model override |
+| `--url` | Treat the argument as a URL |
+| `--format` | `text` (default), `json`, `srt`, `vtt` |
+| `--preprocess` | `none` (default) or `vad` |
+| `--record N` / `--save PATH` | Record N seconds from the microphone / save the WAV |
 
----
+### Environment variables
 
-## 🐛 Troubleshooting
-
-| Symptom | Cause | Fix |
+| Variable | Default | Description |
 |---|---|---|
-| `health()` returns `ok: false` | Backend offline | `python -m parakeet_bootstrap` |
-| `connection_error` in `transcribe_url` | URL unreachable or SSRF blocked | Check `ORELHIA_BASE_URL`; for dev: `ORELHIA_ALLOW_PRIVATE_URLS=true` |
-| `file_too_large` | Audio > 25 MB | Compress: `ffmpeg -i in.mp3 -b:a 64k out.mp3` |
-| `private_url_blocked` | URL in local network | `ORELHIA_ALLOW_PRIVATE_URLS=true` |
-| `http_error 503` | Model loading | Wait ~30s; auto-retry |
-| `pyaudio_unavailable` | PyAudio not installed | `pip install pyaudio` |
-| GPU stuck | WSL/Docker adapter down | `wsl --shutdown` (admin) + `docker start parakeet-gpu` |
+| `ORELHIA_BASE_URL` | `http://localhost:5092` | Backend URL |
+| `ORELHIA_MODEL` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | Default model sent in the POST |
+| `ORELHIA_TIMEOUT` | `120` | HTTP timeout (seconds) |
+| `ORELHIA_MAX_BYTES` | `26214400` (25 MB) | Audio size limit |
+| `ORELHIA_ALLOW_PRIVATE_URLS` | `false` | Allows private URLs in `transcribe_url` (dev only) |
+| `ORELHIA_CACHE_DIR` | `~/.orelhIA/cache` | LRU cache directory |
+| `ORELHIA_CACHE_MAX_ENTRIES` | `128` | Max cache entries |
+| `ORELHIA_VAD_RMS_THRESHOLD` | `0.01` | VAD RMS threshold (0 to 1 scale) |
+| `ORELHIA_VAD_MIN_SPEECH_MS` | `250` | Minimum continuous speech to keep |
+| `ORELHIA_VAD_PAD_MS` | `100` | Padding before/after speech chunks |
+| `ORELHIA_RECORD_SAMPLE_RATE` | `16000` | Recording sample rate |
+| `ORELHIA_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
----
+### Tool error codes
 
-## 📊 Performance
+Errors come back as structured results (`{"error": ..., "code": ...}`) without crashing the server: `file_not_found`, `unsupported_format`, `file_too_large`, `invalid_scheme`, `private_url_blocked`, `download_failed`, `connection_error`, `http_error`, `retry_exhausted`, `pyaudio_unavailable`, `invalid_duration`, `recording_failed`, `write_failed`, `unexpected_error`.
 
-| Operation | CPU (TAGARELA) | GPU (istupakov) |
-|---|---|---|
-| 30s transcription | 4.8s | **2.4s** (1.4×) |
-| Cache hit | <1ms | <1ms |
-| Cold start (model download) | ~3min | ~3min |
+## Production
 
----
+This is a local stdio server: there is no HTTP endpoint to deploy. What exists to package and run:
 
-## 🤝 Contributing
+```bash
+uv build                          # produces dist/orelhia-3.0.0-py3-none-any.whl (orelhIA/, server.py, parakeet_bootstrap.py) and the sdist
+pip install dist/orelhia-*.whl    # the installed package imports from any directory
+python -m orelhIA                 # starts the MCP server over stdio (the MCP client spawns it)
+```
 
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md). TL;DR:
+The backend process is managed by the idempotent bootstrap (`bootstrap_parakeet()` or `python -m parakeet_bootstrap`), with `--restart unless-stopped` on the container.
 
-1. Fork + branch
-2. Changes with tests
-3. `pytest` + `ruff check` pass
-4. Update `CHANGELOG.md`
-5. Open PR with clear description
+## Project layout
 
----
+```
+server.py                    MCP server (FastMCP) + the 7 tools, cache, VAD, metrics, SSRF guard
+parakeet_bootstrap.py        Docker lifecycle (image, container, /health), idempotent
+orelhIA/
+├── __init__.py              re-exports from server.py (compatibility)
+├── __main__.py              stdio entrypoint: python -m orelhIA
+└── cli/__main__.py          standalone CLI: python -m orelhIA.cli
+tests/
+└── test_parakeet_bootstrap.py  26 unit tests for the bootstrap (mocks, no Docker)
+docs/ARCHITECTURE.md         diagrams and architecture decisions
+Makefile / Taskfile.yml      dev/test/lint/run shortcuts
+install.sh / install.ps1     installers (uv + deps + bootstrap)
+```
 
-## 📜 License
+## Tests and verification
 
-[MIT](./LICENSE) — use, modify, distribute freely.
+```bash
+uv run pytest                                    # 26 passed
+uv run pytest tests/test_parakeet_bootstrap.py   # bootstrap only
+uv run ruff check server.py parakeet_bootstrap.py orelhIA/ tests/   # clean
+uv run mypy server.py parakeet_bootstrap.py                          # clean
+uv run python -m orelhIA.cli --health                                # real backend API
+```
 
----
+What the tests actually cover: 26 unit cases for `parakeet_bootstrap` (platform/distro detection, Docker, image, container, idempotency, progress callbacks) using `unittest.mock`, no network and no Docker. There are no automated tests for `server.py` and no CI. The rest of the verification is manual: bring the backend up, run `--health`, transcribe a file and check `get_metrics`.
 
-## 🙏 Credits
+## Current state and limitations
 
-- **Parakeet TDT 0.6B v3** — NVIDIA NeMo
-- **TAGARELA pt-BR** — [Alefiury](https://huggingface.co/alefiury) fine-tune
-- **Speaches** — [speaches-ai](https://github.com/speaches-ai/speaches)
-- **faster-whisper** — [SYSTRAN](https://github.com/SYSTRAN/faster-whisper)
-- **MCP** — [Model Context Protocol](https://modelcontextprotocol.io)
+- The repository ships no Dockerfile or build recipe for the backend image. `parakeet_bootstrap` assumes the image already exists on the machine; a `docker pull` of the default name (`parakeet-tdt:ptbr-cpu`) fails because no public registry serves it. Use `--image`/`--container`/`--port` (or the `bootstrap_parakeet` parameters) for the image you have.
+- No GitHub CI (no workflows in the repository).
+- It transcribes whole files; there is no streaming or incremental transcription.
+- `preprocess="vad"` only acts on 16-bit PCM WAV; for other formats the VAD is skipped with a log line.
+- `record_audio` depends on PyAudio (`record` extra) and an input device; with no speech the text comes back empty.
+- `transcribe_url` accepts http(s) only; private networks are blocked by default (SSRF guard).
+- Metrics are in memory and reset on restart; `get_metrics` and `clear_cache` are not counted.
+- `uv.lock` is not committed (`uv sync` resolves on the fly); the only version ceiling today is `mcp>=1.0,<2`.
+- macOS is not supported by the bootstrap (Windows and Linux are, by design).
+- No authentication on the backend: the container is exposed on loopback.
+
+## Documentation
+
+| Document | Content |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Diagrams (topology, layers, flows), security model, design decisions |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Development setup, style, PR process |
+| [`CHANGELOG.md`](CHANGELOG.md) | Version history |
+
+## License
+
+MIT, see [`LICENSE`](LICENSE). Credits: Parakeet TDT 0.6B v3 (NVIDIA NeMo), pt-BR TAGARELA fine-tune ([Alefiury](https://huggingface.co/alefiury)), [Speaches](https://github.com/speaches-ai/speaches), [MCP](https://modelcontextprotocol.io).

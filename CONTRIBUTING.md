@@ -6,22 +6,21 @@ Thank you for your interest in **orelhIA**! Contributions of all kinds are welco
 
 ```bash
 # 1. Clone
-git clone https://github.com/evandro/orelhIA.git
+git clone https://github.com/evandrodevbr/orelhIA.git
 cd orelhIA
 
-# 2. Install (editable mode with dev deps)
+# 2. Install (editable, com deps de dev e gravação)
 pip install -e ".[dev,record]"
+# ou, com uv (instala o projeto + extras no .venv):
+uv sync --extra dev --extra record
 
-# 3. Install pre-commit hooks (optional)
-pre-commit install
-
-# 4. Start the parakeet container (idempotent)
+# 3. Start the parakeet container (idempotent)
 python -m parakeet_bootstrap
 ```
 
 ## Code style
 
-- **Python 3.10+** (uses `from __future__ import annotations`, PEP 604 unions in server, `Optional` in bootstrap)
+- **Python 3.10+** (`from __future__ import annotations`, unions PEP 604)
 - **Line length: 100** (configured in `pyproject.toml`)
 - **Type hints everywhere** on public APIs
 - **Docstrings** for all public functions/classes (Google style)
@@ -40,8 +39,7 @@ mypy server.py parakeet_bootstrap.py
 ```bash
 pytest                                    # all tests
 pytest tests/test_parakeet_bootstrap.py   # just bootstrap
-pytest -k test_health                     # by name
-pytest --cov=orelhIA                  # with coverage
+pytest -k bootstrap                       # by name
 ```
 
 Tests use `pytest` with `unittest.mock` for subprocess isolation. No network or Docker is required.
@@ -68,7 +66,7 @@ See `docs/ARCHITECTURE.md` for the current system design.
 
 ## Security
 
-Found a security issue? **Do not** open a public issue. Email <evandro@example.com> with details. Critical issues get a fix within 48 hours.
+Found a security issue? **Do not** open a public issue. Email <evandrodevbr@users.noreply.github.com> with details.
 
 ## License
 

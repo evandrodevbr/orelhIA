@@ -51,11 +51,12 @@ Each layer has **one job** and depends only on the layer below it.
 
 | File | Lines | Responsibility | Public surface |
 |---|---|---|---|
-| `server.py` | 1155 | MCP server, all 7 tools, domain logic | `mcp`, 7 `@mcp.tool()` |
-| `parakeet_bootstrap.py` | 342 | Docker lifecycle, idempotent | `bootstrap()`, `main()` |
-| `cli/whisper` | 112 | Standalone CLI using server as library | `main()` |
+| `server.py` | 1150 | MCP server, all 7 tools, domain logic | `mcp`, 7 `@mcp.tool()` |
+| `parakeet_bootstrap.py` | 341 | Docker lifecycle, idempotent | `bootstrap()`, `main()` |
+| `orelhIA/__main__.py` | 14 | stdio entrypoint (`python -m orelhIA`) | `mcp.run()` |
+| `orelhIA/cli/__main__.py` | 112 | Standalone CLI using server as library | `main()` |
 | `tests/test_parakeet_bootstrap.py` | 237 | Unit tests for bootstrap | 26 pytest cases |
-| `pyproject.toml` | 80 | Build config, deps, ruff/mypy settings | — |
+| `pyproject.toml` | 82 | Build config, deps, ruff/mypy settings | — |
 
 ## Data flow — transcription
 
