@@ -4,26 +4,26 @@ MCP server for local audio transcription via Parakeet TDT (PT-BR native).
 This package re-exports the canonical implementation from server.py for
 backwards compatibility with `python -m orelhIA` invocations.
 """
-from server import (  # noqa: F401  -- intentional re-export
+from server import (
     __version__,
-    mcp,
+    bootstrap_parakeet,
+    clear_cache,
+    get_metrics,
     health,
+    mcp,
+    record_audio,
     transcribe_file,
     transcribe_url,
-    record_audio,
-    get_metrics,
-    clear_cache,
-    bootstrap_parakeet,
 )
 
 __version__ = __version__
 __all__ = [
-    "mcp",
+    "bootstrap_parakeet",
+    "clear_cache",
+    "get_metrics",
     "health",
+    "mcp",
+    "record_audio",
     "transcribe_file",
     "transcribe_url",
-    "record_audio",
-    "get_metrics",
-    "clear_cache",
-    "bootstrap_parakeet",
 ]

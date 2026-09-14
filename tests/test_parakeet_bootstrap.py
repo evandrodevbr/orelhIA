@@ -11,14 +11,11 @@ import sys
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 # Adiciona o diretório raiz ao path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import parakeet_bootstrap as pb
-
 
 # ─── Detecção de plataforma ────────────────────────────────────────────
 
@@ -138,9 +135,12 @@ def test_bootstrap_rejects_macos():
     assert "não suportado" in r.error or "macOS" in r.error
 
 
-def test_bootstrap_rejects_unknown_os():
-    with mock.patch.object(pb.platform, "system", return_value="BeOS"):
-        r = pb.bootstrap()
+def test_bootstrap_rejects_unknown_os(monkeypatch):
+    # _linux_distro lê /etc/os-release direto, então precisa ser mockado
+    # para o teste valer em qualquer máquina (inclusive Linux com Docker).
+    monkeypatch.setattr(pb.platform, "system", lambda: "BeOS")
+    monkeypatch.setattr(pb, "_linux_distro", lambda: None)
+    r = pb.bootstrap()
     assert r.ok is False
     assert "não suportado" in r.error
 

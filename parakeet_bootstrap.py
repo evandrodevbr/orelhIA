@@ -9,15 +9,14 @@ de pacotes correto (apt/dnf/pacman/zypper).
 from __future__ import annotations
 
 import logging
-# (os removido)
 import platform
 import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-# (Path removido)
-from typing import Callable, List, Optional
+from pathlib import Path
 
 logger = logging.getLogger("parakeet-bootstrap")
 
@@ -37,13 +36,13 @@ class BootstrapResult:
     image: str = DEFAULT_IMAGE
     container: str = DEFAULT_CONTAINER
     port: int = DEFAULT_PORT
-    steps: List[str] = field(default_factory=list)
-    error: Optional[str] = None
+    steps: list[str] = field(default_factory=list)
+    error: str | None = None
     installed_docker: bool = False
     reused_container: bool = False
 
 
-def _emit(cb: Optional[ProgressCb], step: str, percent: int, msg: str) -> None:
+def _emit(cb: ProgressCb | None, step: str, percent: int, msg: str) -> None:
     if cb:
         try:
             cb(step, percent, msg)
@@ -54,7 +53,7 @@ def _emit(cb: Optional[ProgressCb], step: str, percent: int, msg: str) -> None:
         logger.info("[%d%%] %s: %s", percent, step, msg)
 
 
-def _run(cmd: List[str], *, check: bool = True, timeout: int = 300, **kw) -> subprocess.CompletedProcess:
+def _run(cmd: list[str], *, check: bool = True, timeout: int = 300, **kw) -> subprocess.CompletedProcess:
     """Run a command, raising on failure if check=True."""
     logger.debug("exec: %s", " ".join(cmd))
     return subprocess.run(cmd, check=check, timeout=timeout, capture_output=True, text=True, **kw)
@@ -67,7 +66,7 @@ def _is_windows() -> bool:
     return platform.system() == "Windows"
 
 
-def _linux_distro() -> Optional[str]:
+def _linux_distro() -> str | None:
     """Retorna 'debian' | 'rhel' | 'arch' | 'suse' | None."""
     try:
         with open("/etc/os-release") as f:
@@ -139,7 +138,7 @@ def _install_docker_linux(distro: str) -> None:
         _run(["sudo", "systemctl", "enable", "docker"], check=False, timeout=30)
 
 
-def _ensure_docker(cb: Optional[ProgressCb]) -> None:
+def _ensure_docker(cb: ProgressCb | None) -> None:
     """Garante que Docker está instalado e rodando."""
     _emit(cb, "docker.check", 5, "Verificando Docker...")
     if _has_docker() and _docker_daemon_running():
@@ -180,7 +179,7 @@ def _image_exists(name: str) -> bool:
         return False
 
 
-def _ensure_image(image: str, cb: Optional[ProgressCb]) -> None:
+def _ensure_image(image: str, cb: ProgressCb | None) -> None:
     _emit(cb, "image.check", 25, f"Verificando imagem {image}...")
     if _image_exists(image):
         _emit(cb, "image.check", 50, f"Imagem {image} já presente")
@@ -209,7 +208,7 @@ def _container_exists(name: str) -> bool:
         return False
 
 
-def _start_container(image: str, name: str, port: int, cb: Optional[ProgressCb]) -> None:
+def _start_container(image: str, name: str, port: int, cb: ProgressCb | None) -> None:
     """Cria e inicia container com porta mapeada e restart policy."""
     if _container_exists(name):
         if not _container_running(name):
@@ -232,7 +231,7 @@ def _start_container(image: str, name: str, port: int, cb: Optional[ProgressCb])
 # ─── Health check ───────────────────────────────────────────────────────
 
 
-def _wait_healthy(port: int, cb: Optional[ProgressCb]) -> None:
+def _wait_healthy(port: int, cb: ProgressCb | None) -> None:
     """Aguarda o endpoint /health ficar healthy."""
     import urllib.request
     url = f"http://localhost:{port}/health"
@@ -265,7 +264,7 @@ def bootstrap(
     image: str = DEFAULT_IMAGE,
     container: str = DEFAULT_CONTAINER,
     port: int = DEFAULT_PORT,
-    progress: Optional[ProgressCb] = None,
+    progress: ProgressCb | None = None,
 ) -> BootstrapResult:
     """Roda o bootstrap completo. Idempotente.
 

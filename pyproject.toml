@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "orelhIA"
 version = "3.0.0"
@@ -6,7 +10,7 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
-    {name = "Evandro", email = "evandro@example.com"},
+    {name = "Evandro Fonseca Junior", email = "evandrodevbr@users.noreply.github.com"},
 ]
 keywords = ["mcp", "orelhIA", "parakeet", "transcription", "asr", "stt", "pt-br", "ptbr", "portuguese", "brazilian", "speech-to-text", "docker", "local-first", "offline"]
 classifiers = [
@@ -22,7 +26,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "mcp[cli]>=1.0.0",
+    # mcp 2.x renomeou FastMCP -> MCPServer e quebrou esta API; ver
+    # https://py.sdk.modelcontextprotocol.io/v2/migration/#fastmcp-renamed-to-mcpserver
+    "mcp[cli]>=1.0.0,<2",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +45,15 @@ dev = [
 "Bug Reports" = "https://github.com/evandrodevbr/orelhIA/issues"
 "Parakeet" = "https://github.com/speaches-ai/speaches"
 
+# O package `orelhIA/__init__.py` re-exporta `server.py`, que fica na raiz
+# do repo; sem declarar os py-modules o pacote instalado não importa fora
+# do diretório do repo.
+[tool.setuptools]
+py-modules = ["server", "parakeet_bootstrap"]
+
+[tool.setuptools.packages.find]
+include = ["orelhIA*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -49,7 +64,10 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "PT", "RUF"]
 ignore = ["E501", "B008", "RUF012"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B011", "PT011"]
+# E402: o path do repo é inserido antes do import de parakeet_bootstrap
+"tests/*" = ["B011", "E402", "PT011"]
+# o package se chama orelhIA (camelCase proposital)
+"orelhIA/*" = ["N999"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

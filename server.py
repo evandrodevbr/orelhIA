@@ -49,12 +49,10 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
-import io
 import json
 import logging
 import mimetypes
 import os
-import re
 import socket
 import struct
 import sys
@@ -69,6 +67,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
 import parakeet_bootstrap
 
 try:
@@ -342,7 +341,7 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
                 )
         return super().http_error_302(req, fp, code, msg, headers, newurl)
 
-    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302  # type: ignore[assignment]
 
 
 def _get_safe_opener() -> urllib.request.OpenerDirector:
@@ -585,7 +584,7 @@ def _post_multipart(
     if language:
         parts.append(f'--{boundary}\r\n'.encode())
         parts.append(
-            f'Content-Disposition: form-data; name="language"\r\n\r\n'.encode()
+            b'Content-Disposition: form-data; name="language"\r\n\r\n'
         )
         parts.append(f"{language}\r\n".encode())
     parts.append(f'--{boundary}\r\n'.encode())
@@ -658,7 +657,6 @@ def _cache_key(file_path: Path, model: str, language: str | None, response_forma
 @mcp.tool()
 def health() -> dict[str, Any]:
     """Verifica se o backend está respondendo. Tenta ``/v1/models`` (Whisper) e cai pra ``/health`` (Parakeet)."""
-    METRICS.record_request("health", success=True)
     payload: dict = {}
     for path in ("/v1/models", "/health"):
         try:
@@ -683,6 +681,7 @@ def health() -> dict[str, Any]:
         [m.get("id") for m in payload.get("data", []) if m.get("id")]
         or payload.get("models", [])
     )
+    METRICS.record_request("health", success=True)
     return {
         "ok": True,
         "base_url": BASE_URL,
@@ -720,7 +719,6 @@ def transcribe_file(
         e ``_meta`` (cache, preprocessing, latency).
     """
     started = time.time()
-    METRICS.record_request("transcribe_file", success=True)
     METRICS.record_format(response_format)
 
     file_path = Path(path).expanduser().resolve()
@@ -787,7 +785,7 @@ def transcribe_file(
         result = exc.to_result()
         result["_meta"] = {"cache": "miss", "latency_ms": elapsed_ms}
         return result
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("transcribe_file failed")
         METRICS.record_request("transcribe_file", success=False)
         return _err(
@@ -798,6 +796,7 @@ def transcribe_file(
     elapsed_ms = (time.time() - started) * 1000
     METRICS.record_latency(elapsed_ms, chosen_model)
     METRICS.record_bytes(file_path.stat().st_size)
+    METRICS.record_request("transcribe_file", success=True)
 
     if vad_applied:
         try:
@@ -837,7 +836,6 @@ def transcribe_url(
 ) -> dict[str, Any]:
     """Baixa uma URL http(s) e transcreve o áudio."""
     started = time.time()
-    METRICS.record_request("transcribe_url", success=True)
     METRICS.record_format("json")
 
     if err := _validate_url(url):
@@ -895,7 +893,7 @@ def transcribe_url(
                 "model": chosen_model,
             }
             return result
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("transcribe_url failed")
         METRICS.record_request("transcribe_url", success=False)
         return _err(
@@ -922,7 +920,7 @@ def _record_audio_pyaudio(
     channels: int = 1,
 ) -> bytes:
     """Grava PCM 16-bit mono via PyAudio. Retorna raw bytes."""
-    import pyaudio  # type: ignore
+    import pyaudio
 
     if seconds <= 0 or seconds > 600:
         raise WhisperError(
@@ -994,7 +992,6 @@ def record_audio(
         ``dict`` com ``text``, ``duration``, ``recorded_path``, ``_meta``.
     """
     started = time.time()
-    METRICS.record_request("record_audio", success=True)
     METRICS.record_format("wav")
 
     if not _recording_available():
@@ -1009,7 +1006,7 @@ def record_audio(
     except WhisperError as exc:
         METRICS.record_request("record_audio", success=False)
         return exc.to_result()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("recording failed")
         METRICS.record_request("record_audio", success=False)
         return _err(
@@ -1021,9 +1018,6 @@ def record_audio(
     if output_path:
         out = Path(output_path).expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
-        # (C4: removida escrita raw duplicada; _write_wav_to cria o arquivo WAV)
-        wav_path = _write_wav_to(pcm, sample_rate, out)
-        # Write proper WAV
         wav_path = _write_wav_to(pcm, sample_rate, out)
     else:
         wav_path = _write_wav(pcm, sample_rate)
@@ -1046,6 +1040,7 @@ def record_audio(
     elapsed_ms = (time.time() - started) * 1000
     METRICS.record_latency(elapsed_ms, chosen_model)
     METRICS.record_bytes(len(pcm))
+    METRICS.record_request("record_audio", success=True)
 
     result = _normalize(data, str(wav_path))
     result["_meta"] = {
