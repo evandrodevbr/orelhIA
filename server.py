@@ -451,14 +451,14 @@ def _vad_trim_wav(path: Path) -> Path | None:
     window_size = int(sr * 0.030)
     if window_size == 0:
         return None
-    n_windows = nf // window_size
+    n_windows = (nf + window_size - 1) // window_size
 
     # Calcular RMS por janela
     samples_per_window = window_size * nch
     rms_values: list[float] = []
     for i in range(n_windows):
         start = i * samples_per_window
-        end = start + samples_per_window
+        end = min(start + samples_per_window, nf * nch)
         if end * 2 > len(raw):
             break
         chunk = raw[start * 2 : end * 2]
@@ -473,8 +473,8 @@ def _vad_trim_wav(path: Path) -> Path | None:
             break
         sq = sum(s * s for s in ints)
         rms = (sq / n_samples) ** 0.5
-        # Normalizar para 0-1 (peak int16 = 32767)
-        rms_values.append(rms / 32767.0)
+        # PCM int16 inclui -32768; use sua magnitude para manter a escala 0-1.
+        rms_values.append(rms / 32768.0)
 
     if not rms_values:
         return None
@@ -492,32 +492,32 @@ def _vad_trim_wav(path: Path) -> Path | None:
             start = i
             in_speech = True
         elif not s and in_speech:
-            if (i - start) * 30 >= VAD_MIN_SPEECH_MS:
+            if (i - start) * window_size * 1000 >= VAD_MIN_SPEECH_MS * sr:
                 segments.append((start, i))
             in_speech = False
-    if in_speech and (len(speech_flags) - start) * 30 >= VAD_MIN_SPEECH_MS:
+    speech_frames = min(len(speech_flags) * window_size, nf) - start * window_size
+    if in_speech and speech_frames * 1000 >= VAD_MIN_SPEECH_MS * sr:
         segments.append((start, len(speech_flags)))
 
     if not segments:
         return None
 
     # Aplicar padding e converter para samples
-    pad_windows = VAD_PAD_MS // 30
-    n_total_windows = n_windows
-    output_chunks: list[bytes] = []
+    pad_frames = max(0, sr * VAD_PAD_MS // 1000)
+    padded_segments: list[tuple[int, int]] = []
     for s_start, s_end in segments:
-        # Expandir com padding
-        s_start_padded = max(0, s_start - pad_windows)
-        s_end_padded = min(n_total_windows, s_end + pad_windows)
-        # Converter para samples
-        sample_start = s_start_padded * window_size * nch
-        sample_end = s_end_padded * window_size * nch
-        output_chunks.append(raw[sample_start * 2 : sample_end * 2])
+        frame_start = max(0, s_start * window_size - pad_frames)
+        frame_end = min(nf, s_end * window_size + pad_frames)
+        # Unir padding sobreposto evita repetir fala/silêncio na transcrição.
+        if padded_segments and frame_start <= padded_segments[-1][1]:
+            padded_segments[-1] = (padded_segments[-1][0], max(padded_segments[-1][1], frame_end))
+        else:
+            padded_segments.append((frame_start, frame_end))
 
-    if not output_chunks:
+    if not padded_segments:
         return None
 
-    out_raw = b"".join(output_chunks)
+    out_raw = b"".join(raw[start * nch * 2 : end * nch * 2] for start, end in padded_segments)
     # Escrever WAV em temp file
     fd, name = tempfile.mkstemp(suffix=".wav", prefix="whisper-vad-")
     os.close(fd)  # C5: evita FD leak
@@ -543,7 +543,7 @@ def _vad_trim_wav(path: Path) -> Path | None:
         nf,
         len(out_raw) // 2 // nch,
         reduction * 100,
-        len(segments),
+        len(padded_segments),
     )
     return out_path
 
@@ -644,11 +644,23 @@ def _normalize(data: dict[str, Any], source: str) -> dict[str, Any]:
     }
 
 
-def _cache_key(file_path: Path, model: str, language: str | None, response_format: str) -> str:
+def _cache_key(
+    file_path: Path, model: str, language: str | None, response_format: str,
+    preprocess: str = "none",
+) -> str:
     """SHA-256 do conteúdo + params de transcrição."""
-    data = file_path.read_bytes()
-    payload = data + f"|{model}|{language}|{response_format}".encode()
-    return LRUCache.hash_bytes(payload)
+    params: dict[str, Any] = {
+        "backend": BASE_URL, "model": model, "language": language,
+        "format": response_format, "preprocess": preprocess,
+    }
+    if preprocess == "vad":
+        params["vad"] = [VAD_RMS_THRESHOLD, VAD_MIN_SPEECH_MS, VAD_PAD_MS]
+    digest = hashlib.sha256(json.dumps(params, sort_keys=True).encode())
+    digest.update(b"\0")
+    with file_path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -720,6 +732,9 @@ def transcribe_file(
     """
     started = time.time()
     METRICS.record_format(response_format)
+    if preprocess not in ("none", "vad"):
+        METRICS.record_request("transcribe_file", success=False)
+        return _err("invalid_preprocess", "preprocess deve ser 'none' ou 'vad'.")
 
     file_path = Path(path).expanduser().resolve()
     if not file_path.is_file():
@@ -736,8 +751,13 @@ def transcribe_file(
     chosen_model = model or DEFAULT_MODEL
 
     # 1. Cache check
+    cache_key = None
     try:
-        cache_key = _cache_key(file_path, chosen_model, language, response_format)
+        file_size = file_path.stat().st_size
+        if file_size > MAX_BYTES:
+            METRICS.record_request("transcribe_file", success=False)
+            return _err("file_too_large", f"Arquivo tem {file_size} bytes; máximo permitido é {MAX_BYTES}.", max_bytes=MAX_BYTES)
+        cache_key = _cache_key(file_path, chosen_model, language, response_format, preprocess)
         cached = CACHE.get(cache_key)
         if cached is not None:
             METRICS.record_cache(hit=True)
@@ -745,7 +765,10 @@ def transcribe_file(
             elapsed_ms = (time.time() - started) * 1000
             METRICS.record_latency(elapsed_ms, chosen_model)
             logger.info("cache hit for %s", file_path.name)
-            return {**cached, "_meta": {"cache": "hit", "latency_ms": elapsed_ms}}
+            return {
+                **cached, "source": str(file_path),
+                "_meta": {**cached.get("_meta", {}), "cache": "hit", "latency_ms": elapsed_ms},
+            }
     except OSError as exc:
         logger.warning("cache lookup failed: %s", exc)
     METRICS.record_cache(hit=False)
@@ -777,11 +800,6 @@ def transcribe_file(
         METRICS.record_request("transcribe_file", success=False)
         elapsed_ms = (time.time() - started) * 1000
         METRICS.record_latency(elapsed_ms, chosen_model)
-        if vad_applied:
-            try:
-                work_path.unlink()
-            except OSError:
-                pass
         result = exc.to_result()
         result["_meta"] = {"cache": "miss", "latency_ms": elapsed_ms}
         return result
@@ -792,39 +810,33 @@ def transcribe_file(
             "unexpected_error",
             f"Erro inesperado: {type(exc).__name__}: {exc}",
         )
+    finally:
+        if vad_applied:
+            try:
+                work_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("VAD temp cleanup failed: %s", exc)
 
     elapsed_ms = (time.time() - started) * 1000
     METRICS.record_latency(elapsed_ms, chosen_model)
     METRICS.record_bytes(file_path.stat().st_size)
     METRICS.record_request("transcribe_file", success=True)
 
-    if vad_applied:
-        try:
-            work_path.unlink()
-        except OSError:
-            pass
-
     result = _normalize(data, str(file_path))
-
-    # 4. Cache store
-    try:
-        CACHE.put(
-            cache_key,
-            {
-                k: v
-                for k, v in result.items()
-                if k not in ("source",)
-            },
-        )
-    except OSError as exc:
-        logger.warning("cache store failed: %s", exc)
-
     result["_meta"] = {
         "cache": "miss",
         "preprocess": "vad" if vad_applied else "none",
         "latency_ms": elapsed_ms,
         "model": chosen_model,
     }
+
+    # 4. Cache store
+    try:
+        if cache_key is not None:
+            CACHE.put(cache_key, {k: v for k, v in result.items() if k != "source"})
+    except OSError as exc:
+        logger.warning("cache store failed: %s", exc)
+
     return result
 
 
