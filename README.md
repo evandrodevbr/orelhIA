@@ -193,7 +193,7 @@ uv run mypy server.py parakeet_bootstrap.py                          # limpo
 uv run python -m orelhIA.cli --health                                # api real do backend
 ```
 
-O que os testes cobrem de fato: 26 casos unitários de `parakeet_bootstrap` (detecção de plataforma/distro, Docker, imagem, container, idempotência, callbacks), com `unittest.mock`, sem rede e sem Docker. Não há testes automatizados do `server.py` nem CI configurada. O restante da verificação é manual: subir o backend, `--health`, transcrever um arquivo e conferir `get_metrics`.
+O que os testes cobrem de fato: 26 casos unitários de `parakeet_bootstrap` (detecção de plataforma/distro, Docker, imagem, container, idempotência, callbacks) e 9 regressões de `server.py` (cache, limites e VAD mono/estéreo), com respostas simuladas, sem rede e sem Docker. Não há CI configurada. A integração real continua manual: subir o backend, `--health`, transcrever um arquivo e conferir `get_metrics`.
 
 ## Estado atual e limitações
 
@@ -219,3 +219,11 @@ O que os testes cobrem de fato: 26 casos unitários de `parakeet_bootstrap` (det
 ## Licença
 
 MIT, veja [`LICENSE`](LICENSE). Créditos: Parakeet TDT 0.6B v3 (NVIDIA NeMo), fine-tune pt-BR TAGARELA ([Alefiury](https://huggingface.co/alefiury)), [Speaches](https://github.com/speaches-ai/speaches), [MCP](https://modelcontextprotocol.io).
+
+## Validação de cache e áudio (2026-09-30)
+
+A chave do cache inclui backend, modelo, idioma, formato, pré-processamento e parâmetros do VAD. A leitura do áudio para o hash ocorre em blocos, e arquivos acima do limite são rejeitados antes dessa leitura. Respostas do cache preservam o caminho do arquivo atual e os metadados de modelo/pré-processamento.
+
+O VAD preserva a última janela parcial e une intervalos com padding sobreposto, evitando repetir amostras. Arquivos temporários são removidos também quando o backend gera um erro inesperado.
+
+`uv run pytest` passa 35 testes offline de bootstrap, cache e WAV mono/estéreo; `uv run ruff check .` e `uv run mypy server.py` validam o código. Esses testes usam respostas simuladas e não comprovam Docker, modelo Parakeet, GPU ou microfone em execução.
