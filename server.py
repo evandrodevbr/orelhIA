@@ -897,11 +897,13 @@ def transcribe_url(
             tmp_path = Path(tmpdir) / f"audio{suffix}"
             try:
                 with _get_safe_opener().open(url, timeout=TIMEOUT) as resp:
-                    data_bytes = resp.read()
+                    # Lê no máximo MAX_BYTES + 1: evita carregar em memória um
+                    # download inteiro só para rejeitá-lo depois.
+                    data_bytes = resp.read(MAX_BYTES + 1)
                 if len(data_bytes) > MAX_BYTES:
                     return _err(
                         "file_too_large",
-                        f"Arquivo remoto tem {len(data_bytes)} bytes; máximo {MAX_BYTES}.",
+                        f"Arquivo remoto excede o máximo de {MAX_BYTES} bytes.",
                         max_bytes=MAX_BYTES,
                     )
                 tmp_path.write_bytes(data_bytes)

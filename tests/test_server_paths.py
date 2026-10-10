@@ -285,3 +285,52 @@ def test_transcribe_file_cache_store_failure_is_ignored(audio):
     with mock.patch.object(server, "_post_multipart", return_value={"text": "ok"}), \
             mock.patch.object(server.CACHE, "put", side_effect=OSError("disk full")):
         assert server.transcribe_file(str(audio))["text"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# transcribe_url
+# ---------------------------------------------------------------------------
+class FakeResponse:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.requested: list[int] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size: int = -1) -> bytes:
+        self.requested.append(size)
+        return self.payload if size < 0 else self.payload[:size]
+
+
+def fake_opener(response: FakeResponse):
+    opener = mock.Mock()
+    opener.open.return_value = response
+    return opener
+
+
+def test_transcribe_url_reads_at_most_the_size_limit(audio, monkeypatch):
+    monkeypatch.setattr(server, "MAX_BYTES", 100)
+    response = FakeResponse(b"x" * 10_000)
+    with mock.patch.object(server, "_validate_url", return_value=None), \
+            mock.patch.object(server, "_get_safe_opener", return_value=fake_opener(response)), \
+            mock.patch.object(server, "_post_multipart") as post:
+        result = server.transcribe_url("https://example.com/a.ogg")
+    assert result["code"] == "file_too_large"
+    assert result["max_bytes"] == 100
+    assert response.requested == [101]
+    post.assert_not_called()
+
+
+def test_transcribe_url_within_limit_transcribes(audio, monkeypatch):
+    monkeypatch.setattr(server, "MAX_BYTES", 100)
+    response = FakeResponse(b"x" * 100)
+    with mock.patch.object(server, "_validate_url", return_value=None), \
+            mock.patch.object(server, "_get_safe_opener", return_value=fake_opener(response)), \
+            mock.patch.object(server, "_post_multipart", return_value={"text": "ok"}):
+        result = server.transcribe_url("https://example.com/a.ogg")
+    assert result["text"] == "ok"
+    assert server.METRICS.snapshot()["bytes_processed"] == 100
