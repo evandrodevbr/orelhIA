@@ -334,3 +334,45 @@ def test_transcribe_url_within_limit_transcribes(audio, monkeypatch):
         result = server.transcribe_url("https://example.com/a.ogg")
     assert result["text"] == "ok"
     assert server.METRICS.snapshot()["bytes_processed"] == 100
+
+
+def test_transcribe_url_oversized_counts_as_error(audio, monkeypatch):
+    monkeypatch.setattr(server, "MAX_BYTES", 10)
+    response = FakeResponse(b"x" * 50)
+    with mock.patch.object(server, "_validate_url", return_value=None), \
+            mock.patch.object(server, "_get_safe_opener", return_value=fake_opener(response)):
+        assert server.transcribe_url("https://example.com/a.ogg")["code"] == "file_too_large"
+    assert server.METRICS.snapshot()["requests"]["error"] == 1
+
+
+# ---------------------------------------------------------------------------
+# record_audio
+# ---------------------------------------------------------------------------
+def test_record_audio_default_sample_rate_follows_env_setting():
+    import inspect
+
+    default = inspect.signature(server.record_audio).parameters["sample_rate"].default
+    assert default == server.RECORD_SAMPLE_RATE
+
+
+def test_record_audio_reports_unwritable_output_path(audio, tmp_path):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    with mock.patch.object(server, "_recording_available", return_value=True), \
+            mock.patch.object(server, "_record_audio_pyaudio", return_value=b"\0\0" * 100), \
+            mock.patch.object(server, "_post_multipart") as post:
+        result = server.record_audio(1, output_path=str(blocker / "out.wav"))
+    assert result["code"] == "write_failed"
+    post.assert_not_called()
+    assert server.METRICS.snapshot()["requests"]["error"] == 1
+
+
+def test_record_audio_saves_to_output_path_and_transcribes(audio, tmp_path):
+    out = tmp_path / "nested" / "fala.wav"
+    with mock.patch.object(server, "_recording_available", return_value=True), \
+            mock.patch.object(server, "_record_audio_pyaudio", return_value=b"\0\0" * 100), \
+            mock.patch.object(server, "_post_multipart", return_value={"text": "ola"}):
+        result = server.record_audio(1, output_path=str(out))
+    assert result["text"] == "ola"
+    assert result["_meta"]["recorded_path"] == str(out.resolve())
+    assert out.is_file()

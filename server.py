@@ -33,7 +33,7 @@ Configuração
 Variáveis de ambiente:
 
 - ``ORELHIA_BASE_URL``  (default ``http://localhost:5092``)
-- ``ORELHIA_MODEL``     (default ``alefiury/parakeet-tdt-0.6b-v3-ptBR-TAGARELA-onnx``)
+- ``ORELHIA_MODEL``     (default ``istupakov/parakeet-tdt-0.6b-v3-onnx``)
 - ``ORELHIA_TIMEOUT``   (default ``120`` segundos)
 - ``ORELHIA_MAX_BYTES`` (default ``26214400`` = 25 MB, limite do Parakeet)
 - ``ORELHIA_ALLOW_PRIVATE_URLS`` (default ``false``)
@@ -901,6 +901,7 @@ def transcribe_url(
                     # download inteiro só para rejeitá-lo depois.
                     data_bytes = resp.read(MAX_BYTES + 1)
                 if len(data_bytes) > MAX_BYTES:
+                    METRICS.record_request("transcribe_url", success=False)
                     return _err(
                         "file_too_large",
                         f"Arquivo remoto excede o máximo de {MAX_BYTES} bytes.",
@@ -1022,7 +1023,7 @@ def record_audio(
     output_path: str | None = None,
     language: str | None = None,
     model: str | None = None,
-    sample_rate: int = 16000,
+    sample_rate: int = RECORD_SAMPLE_RATE,
 ) -> dict[str, Any]:
     """Grava do microfone local e transcreve o áudio.
 
@@ -1031,7 +1032,7 @@ def record_audio(
         output_path: Caminho para salvar o WAV. Se omitido, usa temp file.
         language: Código ISO-639-1 opcional.
         model: Override do modelo.
-        sample_rate: Sample rate (default 16000, ideal para Whisper).
+        sample_rate: Sample rate (default ``ORELHIA_RECORD_SAMPLE_RATE``, 16000).
 
     Returns:
         ``dict`` com ``text``, ``duration``, ``recorded_path``, ``_meta``.
@@ -1060,12 +1061,14 @@ def record_audio(
         )
 
     # Salvar WAV
-    if output_path:
-        out = Path(output_path).expanduser().resolve()
-        out.parent.mkdir(parents=True, exist_ok=True)
-        wav_path = _write_wav_to(pcm, sample_rate, out)
-    else:
-        wav_path = _write_wav(pcm, sample_rate)
+    try:
+        if output_path:
+            wav_path = _write_wav_to(pcm, sample_rate, Path(output_path).expanduser().resolve())
+        else:
+            wav_path = _write_wav(pcm, sample_rate)
+    except WhisperError as exc:
+        METRICS.record_request("record_audio", success=False)
+        return exc.to_result()
 
     try:
         chosen_model = model or DEFAULT_MODEL
@@ -1102,6 +1105,7 @@ def record_audio(
 def _write_wav_to(pcm: bytes, sample_rate: int, out: Path) -> Path:
     """Escreve WAV em path específico."""
     try:
+        out.parent.mkdir(parents=True, exist_ok=True)
         with wave.open(str(out), "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
