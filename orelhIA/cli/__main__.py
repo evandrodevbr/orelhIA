@@ -5,11 +5,11 @@ import json
 import os
 import sys
 
-# Adiciona o diretório do server para o path
-SERVER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# server.py fica na raiz do repo, dois níveis acima de orelhIA/cli/.
+SERVER_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, SERVER_DIR)
 
-import server  # type: ignore  # noqa: E402
+import server  # noqa: E402
 
 
 def main() -> int:

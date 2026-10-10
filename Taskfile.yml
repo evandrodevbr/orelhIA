@@ -36,6 +36,11 @@ tasks:
     cmds:
       - uv run ruff check server.py parakeet_bootstrap.py orelhIA/ tests/
 
+  typecheck:
+    desc: Roda mypy
+    cmds:
+      - uv run mypy server.py parakeet_bootstrap.py orelhIA/
+
   format:
     desc: Roda ruff format
     cmds:
@@ -53,9 +58,9 @@ tasks:
       - uv run python -m orelhIA
 
   cli:
-    desc: "Roda CLI standalone. Uso: task cli AUDIO=audio.ogg [LANG=pt]"
+    desc: "Roda CLI standalone. Uso: task cli AUDIO=audio.ogg [LANG_ISO=pt]"
     cmds:
-      - uv run python -m orelhIA.cli {{.AUDIO}} -l {{default "pt" .LANG}}
+      - uv run python -m orelhIA.cli {{.AUDIO}} -l {{default "pt" .LANG_ISO}}
 
   bootstrap:
     desc: Instala Docker + container Parakeet (idempotente)

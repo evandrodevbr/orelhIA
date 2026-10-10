@@ -11,6 +11,8 @@ dist/
 
 # Testing
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 .coverage
 htmlcov/
 .tox/
@@ -37,5 +39,4 @@ orelhIA_local/
 .cache/
 
 # uv
-.venv/
 uv.lock

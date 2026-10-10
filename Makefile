@@ -4,7 +4,7 @@
 # One-liner: `make dev`
 # Single command: `uv sync --extra dev --extra record && uv run python -m parakeet_bootstrap`
 
-.PHONY: help install dev test lint format clean run cli bootstrap health all
+.PHONY: help install dev test lint typecheck format clean run cli bootstrap health all
 
 # Default: show help
 help:
@@ -15,6 +15,7 @@ help:
 	@echo "  make dev        — install + bootstrap container + sanity test"
 	@echo "  make test       — roda pytest"
 	@echo "  make lint       — roda ruff check"
+	@echo "  make typecheck  — roda mypy"
 	@echo "  make format     — roda ruff format"
 	@echo "  make clean      — remove cache/build artifacts"
 	@echo "  make run        — roda MCP server (stdio, pra usar com pi)"
@@ -48,6 +49,10 @@ test:
 lint:
 	uv run ruff check server.py parakeet_bootstrap.py orelhIA/ tests/
 
+# Type check
+typecheck:
+	uv run mypy server.py parakeet_bootstrap.py orelhIA/
+
 # Format
 format:
 	uv run ruff format server.py parakeet_bootstrap.py orelhIA/ tests/
@@ -61,9 +66,11 @@ clean:
 run:
 	uv run python -m orelhIA
 
-# Run CLI standalone: make cli AUDIO=audio.ogg
+# Run CLI standalone: make cli AUDIO=audio.ogg [LANG_ISO=pt]
+# (não use LANG: é a variável de locale do shell, ex. en_US.UTF-8)
+LANG_ISO ?= pt
 cli:
-	uv run python -m orelhIA.cli $(AUDIO) -l $(LANG)
+	uv run python -m orelhIA.cli $(AUDIO) -l $(LANG_ISO)
 
 # Install Docker + run container (idempotent)
 bootstrap:

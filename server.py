@@ -283,10 +283,6 @@ class LRUCache:
         except OSError as exc:
             logger.warning("cache index save failed: %s", exc)
 
-    @staticmethod
-    def hash_bytes(data: bytes) -> str:
-        return hashlib.sha256(data).hexdigest()
-
     def get(self, key: str) -> dict[str, Any] | None:
         with self._lock:
             entry = self._index.get(key)
@@ -385,7 +381,7 @@ def _is_private_host(host: str) -> bool:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return True
-    resolved = (_parse_ip(info[4][0]) for info in infos)
+    resolved = (_parse_ip(str(info[4][0])) for info in infos)
     return any(ip is not None and _is_restricted_ip(ip) for ip in resolved)
 
 
