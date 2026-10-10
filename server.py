@@ -33,7 +33,7 @@ Configuração
 Variáveis de ambiente:
 
 - ``ORELHIA_BASE_URL``  (default ``http://localhost:5092``)
-- ``ORELHIA_MODEL``     (default ``alefiury/parakeet-tdt-0.6b-v3-ptBR-TAGARELA-onnx``)
+- ``ORELHIA_MODEL``     (default ``istupakov/parakeet-tdt-0.6b-v3-onnx``)
 - ``ORELHIA_TIMEOUT``   (default ``120`` segundos)
 - ``ORELHIA_MAX_BYTES`` (default ``26214400`` = 25 MB, limite do Parakeet)
 - ``ORELHIA_ALLOW_PRIVATE_URLS`` (default ``false``)
@@ -283,10 +283,6 @@ class LRUCache:
         except OSError as exc:
             logger.warning("cache index save failed: %s", exc)
 
-    @staticmethod
-    def hash_bytes(data: bytes) -> str:
-        return hashlib.sha256(data).hexdigest()
-
     def get(self, key: str) -> dict[str, Any] | None:
         with self._lock:
             entry = self._index.get(key)
@@ -353,46 +349,40 @@ def _get_safe_opener() -> urllib.request.OpenerDirector:
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+_LOCAL_HOSTNAMES = frozenset({"localhost", "ip6-localhost", "ip6-loopback"})
+
+
+def _is_restricted_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _parse_ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(value)
+    except ValueError:
+        return None
+
+
 def _is_private_host(host: str) -> bool:
     host_lower = (host or "").lower()
-    if not host_lower:
+    if not host_lower or host_lower in _LOCAL_HOSTNAMES:
         return True
-    if host_lower in {"localhost", "ip6-localhost", "ip6-loopback"}:
-        return True
-    ip = None
-    try:
-        ip = ipaddress.ip_address(host_lower)
-    except ValueError:
-        pass
-    if ip is not None:
-        return bool(
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        )
+    literal = _parse_ip(host_lower)
+    if literal is not None:
+        return _is_restricted_ip(literal)
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return True
-    for info in infos:
-        ip_str = info[4][0]
-        try:
-            ip2 = ipaddress.ip_address(ip_str)
-        except ValueError:
-            continue
-        if (
-            ip2.is_private
-            or ip2.is_loopback
-            or ip2.is_link_local
-            or ip2.is_multicast
-            or ip2.is_reserved
-            or ip2.is_unspecified
-        ):
-            return True
-    return False
+    resolved = (_parse_ip(str(info[4][0])) for info in infos)
+    return any(ip is not None and _is_restricted_ip(ip) for ip in resolved)
 
 
 def _validate_url(url: str) -> dict[str, Any] | None:
@@ -431,29 +421,9 @@ def _read_wav(path: Path) -> tuple[bytes, int, int, int] | None:
         return None
 
 
-def _vad_trim_wav(path: Path) -> Path | None:
-    """Aplica VAD energy-based em WAV PCM 16-bit.
-
-    Estratégia: divide o áudio em janelas de 30ms, calcula RMS normalizado,
-    marca como "speech" se RMS > threshold. Mantém segmentos contínuos
-    de speech >= MIN_SPEECH_MS. Aplica padding antes/depois.
-
-    Retorna path para WAV trimado, ou None se não foi possível.
-    """
-    data = _read_wav(path)
-    if data is None:
-        return None
-    raw, sr, nch, nf = data
-    if nf == 0:
-        return None
-
-    # 30ms windows
-    window_size = int(sr * 0.030)
-    if window_size == 0:
-        return None
+def _window_rms_values(raw: bytes, nf: int, nch: int, window_size: int) -> list[float]:
+    """RMS normalizado (0-1) de cada janela de ``window_size`` frames."""
     n_windows = (nf + window_size - 1) // window_size
-
-    # Calcular RMS por janela
     samples_per_window = window_size * nch
     rms_values: list[float] = []
     for i in range(n_windows):
@@ -462,28 +432,24 @@ def _vad_trim_wav(path: Path) -> Path | None:
         if end * 2 > len(raw):
             break
         chunk = raw[start * 2 : end * 2]
-        # unpack como int16 little-endian
         n_samples = len(chunk) // 2
         if n_samples == 0:
             break
-        # vectorized RMS via struct unpack
         try:
             ints = struct.unpack(f"<{n_samples}h", chunk)
         except struct.error:
             break
-        sq = sum(s * s for s in ints)
-        rms = (sq / n_samples) ** 0.5
+        rms = (sum(s * s for s in ints) / n_samples) ** 0.5
         # PCM int16 inclui -32768; use sua magnitude para manter a escala 0-1.
         rms_values.append(rms / 32768.0)
+    return rms_values
 
-    if not rms_values:
-        return None
 
-    # Marcar janelas como speech
-    threshold = VAD_RMS_THRESHOLD
-    speech_flags = [r > threshold for r in rms_values]
-
-    # Encontrar segmentos contínuos
+def _speech_segments(
+    rms_values: list[float], window_size: int, nf: int, sr: int
+) -> list[tuple[int, int]]:
+    """Segmentos contínuos (em índices de janela) acima do threshold e >= MIN_SPEECH_MS."""
+    speech_flags = [r > VAD_RMS_THRESHOLD for r in rms_values]
     segments: list[tuple[int, int]] = []
     in_speech = False
     start = 0
@@ -498,27 +464,28 @@ def _vad_trim_wav(path: Path) -> Path | None:
     speech_frames = min(len(speech_flags) * window_size, nf) - start * window_size
     if in_speech and speech_frames * 1000 >= VAD_MIN_SPEECH_MS * sr:
         segments.append((start, len(speech_flags)))
+    return segments
 
-    if not segments:
-        return None
 
-    # Aplicar padding e converter para samples
+def _pad_and_merge(
+    segments: list[tuple[int, int]], window_size: int, nf: int, sr: int
+) -> list[tuple[int, int]]:
+    """Converte janelas em frames, aplica padding e une segmentos sobrepostos."""
     pad_frames = max(0, sr * VAD_PAD_MS // 1000)
-    padded_segments: list[tuple[int, int]] = []
+    padded: list[tuple[int, int]] = []
     for s_start, s_end in segments:
         frame_start = max(0, s_start * window_size - pad_frames)
         frame_end = min(nf, s_end * window_size + pad_frames)
         # Unir padding sobreposto evita repetir fala/silêncio na transcrição.
-        if padded_segments and frame_start <= padded_segments[-1][1]:
-            padded_segments[-1] = (padded_segments[-1][0], max(padded_segments[-1][1], frame_end))
+        if padded and frame_start <= padded[-1][1]:
+            padded[-1] = (padded[-1][0], max(padded[-1][1], frame_end))
         else:
-            padded_segments.append((frame_start, frame_end))
+            padded.append((frame_start, frame_end))
+    return padded
 
-    if not padded_segments:
-        return None
 
-    out_raw = b"".join(raw[start * nch * 2 : end * nch * 2] for start, end in padded_segments)
-    # Escrever WAV em temp file
+def _write_trimmed_wav(out_raw: bytes, nch: int, sr: int) -> Path | None:
+    """Grava ``out_raw`` em WAV temporário; None (sem deixar arquivo) se falhar."""
     fd, name = tempfile.mkstemp(suffix=".wav", prefix="whisper-vad-")
     os.close(fd)  # C5: evita FD leak
     out_path = Path(name)
@@ -534,6 +501,36 @@ def _vad_trim_wav(path: Path) -> Path | None:
             out_path.unlink()
         except OSError:
             pass
+        return None
+    return out_path
+
+
+def _vad_trim_wav(path: Path) -> Path | None:
+    """Aplica VAD energy-based em WAV PCM 16-bit.
+
+    Estratégia: divide o áudio em janelas de 30ms, calcula RMS normalizado,
+    marca como "speech" se RMS > threshold. Mantém segmentos contínuos
+    de speech >= MIN_SPEECH_MS. Aplica padding antes/depois.
+
+    Retorna path para WAV trimado, ou None se não foi possível.
+    """
+    data = _read_wav(path)
+    if data is None:
+        return None
+    raw, sr, nch, nf = data
+    window_size = int(sr * 0.030)  # janelas de 30ms
+    if nf == 0 or window_size == 0:
+        return None
+
+    rms_values = _window_rms_values(raw, nf, nch, window_size)
+    segments = _speech_segments(rms_values, window_size, nf, sr) if rms_values else []
+    if not segments:
+        return None
+
+    padded_segments = _pad_and_merge(segments, window_size, nf, sr)
+    out_raw = b"".join(raw[start * nch * 2 : end * nch * 2] for start, end in padded_segments)
+    out_path = _write_trimmed_wav(out_raw, nch, sr)
+    if out_path is None:
         return None
 
     reduction = 1.0 - (len(out_raw) / len(raw))
@@ -709,6 +706,87 @@ def health() -> dict[str, Any]:
     }
 
 
+def _resolve_audio_file(path: str) -> Path:
+    """Resolve ``path`` para um arquivo de áudio suportado ou levanta WhisperError."""
+    file_path = Path(path).expanduser().resolve()
+    if not file_path.is_file():
+        raise WhisperError("file_not_found", f"Arquivo não encontrado: {path}")
+    if file_path.suffix.lower() not in SUPPORTED_FORMATS:
+        raise WhisperError(
+            "unsupported_format",
+            f"Formato não suportado: {file_path.suffix!r}.",
+            supported=sorted(SUPPORTED_FORMATS),
+        )
+    return file_path
+
+
+def _lookup_cache(
+    file_path: Path, model: str, language: str | None, response_format: str, preprocess: str
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Retorna ``(cache_key, entrada)``; ``(None, None)`` se o cache falhar.
+
+    Levanta WhisperError ``file_too_large`` antes de calcular o hash.
+    """
+    try:
+        file_size = file_path.stat().st_size
+        if file_size > MAX_BYTES:
+            raise WhisperError(
+                "file_too_large",
+                f"Arquivo tem {file_size} bytes; máximo permitido é {MAX_BYTES}.",
+                max_bytes=MAX_BYTES,
+            )
+        cache_key = _cache_key(file_path, model, language, response_format, preprocess)
+        return cache_key, CACHE.get(cache_key)
+    except OSError as exc:
+        logger.warning("cache lookup failed: %s", exc)
+        return None, None
+
+
+def _cache_hit_result(
+    cached: dict[str, Any], file_path: Path, model: str, started: float
+) -> dict[str, Any]:
+    METRICS.record_cache(hit=True)
+    METRICS.record_request("transcribe_file", success=True)
+    elapsed_ms = (time.time() - started) * 1000
+    METRICS.record_latency(elapsed_ms, model)
+    logger.info("cache hit for %s", file_path.name)
+    return {
+        **cached, "source": str(file_path),
+        "_meta": {**cached.get("_meta", {}), "cache": "hit", "latency_ms": elapsed_ms},
+    }
+
+
+def _apply_vad(file_path: Path, preprocess: str) -> Path | None:
+    """Retorna o WAV trimado quando ``preprocess == "vad"`` e foi possível."""
+    if preprocess != "vad":
+        return None
+    trimmed = _vad_trim_wav(file_path)
+    if trimmed is None:
+        logger.info(
+            "VAD skipped for %s (não é WAV PCM 16-bit ou vazio)",
+            file_path.name,
+        )
+    return trimmed
+
+
+def _discard_vad_temp(trimmed: Path | None) -> None:
+    if trimmed is None:
+        return
+    try:
+        trimmed.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("VAD temp cleanup failed: %s", exc)
+
+
+def _store_in_cache(cache_key: str | None, result: dict[str, Any]) -> None:
+    if cache_key is None:
+        return
+    try:
+        CACHE.put(cache_key, {k: v for k, v in result.items() if k != "source"})
+    except OSError as exc:
+        logger.warning("cache store failed: %s", exc)
+
+
 @mcp.tool()
 def transcribe_file(
     path: str,
@@ -736,58 +814,22 @@ def transcribe_file(
         METRICS.record_request("transcribe_file", success=False)
         return _err("invalid_preprocess", "preprocess deve ser 'none' ou 'vad'.")
 
-    file_path = Path(path).expanduser().resolve()
-    if not file_path.is_file():
-        METRICS.record_request("transcribe_file", success=False)
-        return _err("file_not_found", f"Arquivo não encontrado: {path}")
-    if file_path.suffix.lower() not in SUPPORTED_FORMATS:
-        METRICS.record_request("transcribe_file", success=False)
-        return _err(
-            "unsupported_format",
-            f"Formato não suportado: {file_path.suffix!r}.",
-            supported=sorted(SUPPORTED_FORMATS),
-        )
-
     chosen_model = model or DEFAULT_MODEL
-
-    # 1. Cache check
-    cache_key = None
     try:
-        file_size = file_path.stat().st_size
-        if file_size > MAX_BYTES:
-            METRICS.record_request("transcribe_file", success=False)
-            return _err("file_too_large", f"Arquivo tem {file_size} bytes; máximo permitido é {MAX_BYTES}.", max_bytes=MAX_BYTES)
-        cache_key = _cache_key(file_path, chosen_model, language, response_format, preprocess)
-        cached = CACHE.get(cache_key)
-        if cached is not None:
-            METRICS.record_cache(hit=True)
-            METRICS.record_request("transcribe_file", success=True)
-            elapsed_ms = (time.time() - started) * 1000
-            METRICS.record_latency(elapsed_ms, chosen_model)
-            logger.info("cache hit for %s", file_path.name)
-            return {
-                **cached, "source": str(file_path),
-                "_meta": {**cached.get("_meta", {}), "cache": "hit", "latency_ms": elapsed_ms},
-            }
-    except OSError as exc:
-        logger.warning("cache lookup failed: %s", exc)
+        file_path = _resolve_audio_file(path)
+        cache_key, cached = _lookup_cache(
+            file_path, chosen_model, language, response_format, preprocess
+        )
+    except WhisperError as exc:
+        METRICS.record_request("transcribe_file", success=False)
+        return exc.to_result()
+    if cached is not None:
+        return _cache_hit_result(cached, file_path, chosen_model, started)
     METRICS.record_cache(hit=False)
 
-    # 2. VAD preprocess
-    work_path = file_path
-    vad_applied = False
-    if preprocess == "vad":
-        trimmed = _vad_trim_wav(file_path)
-        if trimmed is not None:
-            work_path = trimmed
-            vad_applied = True
-        else:
-            logger.info(
-                "VAD skipped for %s (não é WAV PCM 16-bit ou vazio)",
-                file_path.name,
-            )
+    trimmed = _apply_vad(file_path, preprocess)
+    work_path = trimmed or file_path
 
-    # 3. Transcribe
     try:
         data = _post_multipart(
             f"{BASE_URL}/v1/audio/transcriptions",
@@ -811,11 +853,7 @@ def transcribe_file(
             f"Erro inesperado: {type(exc).__name__}: {exc}",
         )
     finally:
-        if vad_applied:
-            try:
-                work_path.unlink(missing_ok=True)
-            except OSError as exc:
-                logger.warning("VAD temp cleanup failed: %s", exc)
+        _discard_vad_temp(trimmed)
 
     elapsed_ms = (time.time() - started) * 1000
     METRICS.record_latency(elapsed_ms, chosen_model)
@@ -825,18 +863,11 @@ def transcribe_file(
     result = _normalize(data, str(file_path))
     result["_meta"] = {
         "cache": "miss",
-        "preprocess": "vad" if vad_applied else "none",
+        "preprocess": "vad" if trimmed is not None else "none",
         "latency_ms": elapsed_ms,
         "model": chosen_model,
     }
-
-    # 4. Cache store
-    try:
-        if cache_key is not None:
-            CACHE.put(cache_key, {k: v for k, v in result.items() if k != "source"})
-    except OSError as exc:
-        logger.warning("cache store failed: %s", exc)
-
+    _store_in_cache(cache_key, result)
     return result
 
 
@@ -866,11 +897,14 @@ def transcribe_url(
             tmp_path = Path(tmpdir) / f"audio{suffix}"
             try:
                 with _get_safe_opener().open(url, timeout=TIMEOUT) as resp:
-                    data_bytes = resp.read()
+                    # Lê no máximo MAX_BYTES + 1: evita carregar em memória um
+                    # download inteiro só para rejeitá-lo depois.
+                    data_bytes = resp.read(MAX_BYTES + 1)
                 if len(data_bytes) > MAX_BYTES:
+                    METRICS.record_request("transcribe_url", success=False)
                     return _err(
                         "file_too_large",
-                        f"Arquivo remoto tem {len(data_bytes)} bytes; máximo {MAX_BYTES}.",
+                        f"Arquivo remoto excede o máximo de {MAX_BYTES} bytes.",
                         max_bytes=MAX_BYTES,
                     )
                 tmp_path.write_bytes(data_bytes)
@@ -989,7 +1023,7 @@ def record_audio(
     output_path: str | None = None,
     language: str | None = None,
     model: str | None = None,
-    sample_rate: int = 16000,
+    sample_rate: int = RECORD_SAMPLE_RATE,
 ) -> dict[str, Any]:
     """Grava do microfone local e transcreve o áudio.
 
@@ -998,7 +1032,7 @@ def record_audio(
         output_path: Caminho para salvar o WAV. Se omitido, usa temp file.
         language: Código ISO-639-1 opcional.
         model: Override do modelo.
-        sample_rate: Sample rate (default 16000, ideal para Whisper).
+        sample_rate: Sample rate (default ``ORELHIA_RECORD_SAMPLE_RATE``, 16000).
 
     Returns:
         ``dict`` com ``text``, ``duration``, ``recorded_path``, ``_meta``.
@@ -1027,12 +1061,14 @@ def record_audio(
         )
 
     # Salvar WAV
-    if output_path:
-        out = Path(output_path).expanduser().resolve()
-        out.parent.mkdir(parents=True, exist_ok=True)
-        wav_path = _write_wav_to(pcm, sample_rate, out)
-    else:
-        wav_path = _write_wav(pcm, sample_rate)
+    try:
+        if output_path:
+            wav_path = _write_wav_to(pcm, sample_rate, Path(output_path).expanduser().resolve())
+        else:
+            wav_path = _write_wav(pcm, sample_rate)
+    except WhisperError as exc:
+        METRICS.record_request("record_audio", success=False)
+        return exc.to_result()
 
     try:
         chosen_model = model or DEFAULT_MODEL
@@ -1069,6 +1105,7 @@ def record_audio(
 def _write_wav_to(pcm: bytes, sample_rate: int, out: Path) -> Path:
     """Escreve WAV em path específico."""
     try:
+        out.parent.mkdir(parents=True, exist_ok=True)
         with wave.open(str(out), "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)

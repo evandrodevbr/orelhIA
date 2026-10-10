@@ -5,10 +5,10 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![MCP](https://img.shields.io/badge/MCP-stdio%20server-6E56CF)
 ![Backend](https://img.shields.io/badge/backend-Parakeet%20TDT-orange)
-![Tests](https://img.shields.io/badge/tests-26%20passing-brightgreen)
+![CI](https://github.com/evandrodevbr/orelhIA/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-[🇧🇷 Português](./README.md) · [🇺🇸 English](./README.en.md) · [Architecture](./docs/ARCHITECTURE.md) · [Contributing](./CONTRIBUTING.md)
+[Português](./README.md) · [English](./README.en.md) · [Architecture](./docs/ARCHITECTURE.md) · [Contributing](./CONTRIBUTING.md)
 
 ## About
 
@@ -60,7 +60,7 @@ local transcription backend (Parakeet TDT in Docker)
 
 ## Quick start
 
-Commands below were executed and verified in this repository (Linux, Python 3.13, uv):
+Install, tests and the CLI `--help` were run on Windows 11 with Python 3.13 and uv. The steps that need Docker (`parakeet_bootstrap`, `--health`, transcribing) were not run in this review and need the backend to be available:
 
 ```bash
 git clone https://github.com/evandrodevbr/orelhIA.git
@@ -96,7 +96,7 @@ Register the MCP server in your client (config tested with an `initialize` and `
 }
 ```
 
-`Makefile` shortcuts (tested): `make test`, `make lint`, `make health`, `make run` (MCP over stdio), `make bootstrap`. `Taskfile.yml` is the cross-platform alternative (YAML validated; the `task` runner was not installed in the verification environment).
+`Makefile` shortcuts: `make test`, `make lint`, `make typecheck`, `make health`, `make run` (MCP over stdio), `make bootstrap` and `make cli AUDIO=audio.ogg [LANG_ISO=pt]`. `Taskfile.yml` has the same targets. The targets were not run in this review; the equivalent `uv run` commands were.
 
 ## Usage
 
@@ -175,30 +175,32 @@ parakeet_bootstrap.py        Docker lifecycle (image, container, /health), idemp
 orelhIA/
 ├── __init__.py              re-exports from server.py (compatibility)
 ├── __main__.py              stdio entrypoint: python -m orelhIA
-└── cli/__main__.py          standalone CLI: python -m orelhIA.cli
+└── cli/                     standalone CLI: python -m orelhIA.cli
 tests/
-└── test_parakeet_bootstrap.py  26 unit tests for the bootstrap (mocks, no Docker)
+├── test_parakeet_bootstrap.py  Docker bootstrap (mocks, no Docker)
+├── test_transcription.py       cache, limits and VAD
+└── test_server_paths.py        base paths of the SSRF guard, VAD, transcribe_file/url and record_audio
+.github/workflows/ci.yml     ruff, mypy and pytest (Python 3.10 and 3.12)
 docs/ARCHITECTURE.md         diagrams and architecture decisions
-Makefile / Taskfile.yml      dev/test/lint/run shortcuts
+Makefile / Taskfile.yml      dev/test/lint/typecheck/run shortcuts
 install.sh / install.ps1     installers (uv + deps + bootstrap)
 ```
 
 ## Tests and verification
 
 ```bash
-uv run pytest                                    # 26 passed
+uv run pytest                                    # whole suite
 uv run pytest tests/test_parakeet_bootstrap.py   # bootstrap only
-uv run ruff check server.py parakeet_bootstrap.py orelhIA/ tests/   # clean
-uv run mypy server.py parakeet_bootstrap.py                          # clean
+uv run ruff check server.py parakeet_bootstrap.py orelhIA/ tests/
+uv run mypy server.py parakeet_bootstrap.py orelhIA/
 uv run python -m orelhIA.cli --health                                # real backend API
 ```
 
-What the tests actually cover: 26 unit cases for `parakeet_bootstrap` (platform/distro detection, Docker, image, container, idempotency, progress callbacks) using `unittest.mock`, no network and no Docker. There are no automated tests for `server.py` and no CI. The rest of the verification is manual: bring the backend up, run `--health`, transcribe a file and check `get_metrics`.
+The tests use simulated responses, no network and no Docker: they cover the bootstrap (platform/distro, Docker, image, container, idempotency), the LRU cache (key, limits, hit/miss), the VAD (mono/stereo, padding, write failures), the SSRF guard, `transcribe_file`, `transcribe_url` and `record_audio`. They do not prove real Docker, the Parakeet model, GPU or microphone; that integration stays manual: bring the backend up, run `--health`, transcribe a file and check `get_metrics`. The `.github/workflows/ci.yml` workflow runs lint, mypy and pytest on every push and PR.
 
 ## Current state and limitations
 
 - The repository ships no Dockerfile or build recipe for the backend image. `parakeet_bootstrap` assumes the image already exists on the machine; a `docker pull` of the default name (`parakeet-tdt:ptbr-cpu`) fails because no public registry serves it. Use `--image`/`--container`/`--port` (or the `bootstrap_parakeet` parameters) for the image you have.
-- No GitHub CI (no workflows in the repository).
 - It transcribes whole files; there is no streaming or incremental transcription.
 - `preprocess="vad"` only acts on 16-bit PCM WAV; for other formats the VAD is skipped with a log line.
 - `record_audio` depends on PyAudio (`record` extra) and an input device; with no speech the text comes back empty.

@@ -5,10 +5,10 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![MCP](https://img.shields.io/badge/MCP-servidor%20stdio-6E56CF)
 ![Backend](https://img.shields.io/badge/backend-Parakeet%20TDT-orange)
-![Testes](https://img.shields.io/badge/testes-26%20passando-brightgreen)
+![CI](https://github.com/evandrodevbr/orelhIA/actions/workflows/ci.yml/badge.svg)
 ![Licen%C3%A7a](https://img.shields.io/badge/licen%C3%A7a-MIT-green)
 
-[🇧🇷 Português](./README.md) · [🇺🇸 English](./README.en.md) · [Arquitetura](./docs/ARCHITECTURE.md) · [Contribuindo](./CONTRIBUTING.md)
+[Português](./README.md) · [English](./README.en.md) · [Arquitetura](./docs/ARCHITECTURE.md) · [Contribuindo](./CONTRIBUTING.md)
 
 ## Sobre
 
@@ -60,7 +60,7 @@ backend de transcrição local (Parakeet TDT em Docker)
 
 ## Início rápido
 
-Comandos abaixo executados e verificados neste repositório (Linux, Python 3.13, uv):
+Instalação, testes e `--help` da CLI foram executados em Windows 11 com Python 3.13 e uv. Os passos que dependem de Docker (`parakeet_bootstrap`, `--health`, transcrever) não foram executados nesta revisão e dependem do backend estar disponível:
 
 ```bash
 git clone https://github.com/evandrodevbr/orelhIA.git
@@ -96,7 +96,7 @@ Registre o servidor MCP no seu cliente (config testada com handshake `initialize
 }
 ```
 
-Atalhos do `Makefile` (testados): `make test`, `make lint`, `make health`, `make run` (MCP via stdio), `make bootstrap`. O `Taskfile.yml` é a alternativa cross-platform (YAML validado; o runner `task` não estava instalado no ambiente de verificação).
+Atalhos do `Makefile`: `make test`, `make lint`, `make typecheck`, `make health`, `make run` (MCP via stdio), `make bootstrap` e `make cli AUDIO=audio.ogg [LANG_ISO=pt]`. O `Taskfile.yml` tem os mesmos alvos. Os alvos não foram executados nesta revisão; os comandos `uv run` equivalentes foram.
 
 ## Uso
 
@@ -175,30 +175,32 @@ parakeet_bootstrap.py        ciclo de vida Docker (imagem, container, /health), 
 orelhIA/
 ├── __init__.py              reexports do server.py (compatibilidade)
 ├── __main__.py              entrypoint stdio: python -m orelhIA
-└── cli/__main__.py          CLI standalone: python -m orelhIA.cli
+└── cli/                     CLI standalone: python -m orelhIA.cli
 tests/
-└── test_parakeet_bootstrap.py  26 testes unitários do bootstrap (mocks, sem Docker)
+├── test_parakeet_bootstrap.py  bootstrap Docker (mocks, sem Docker)
+├── test_transcription.py       cache, limites e VAD
+└── test_server_paths.py        caminhos-base de SSRF guard, VAD, transcribe_file/url e record_audio
+.github/workflows/ci.yml     ruff, mypy e pytest (Python 3.10 e 3.12)
 docs/ARCHITECTURE.md         diagramas e decisões de arquitetura
-Makefile / Taskfile.yml      atalhos dev/test/lint/run
+Makefile / Taskfile.yml      atalhos dev/test/lint/typecheck/run
 install.sh / install.ps1     instaladores (uv + deps + bootstrap)
 ```
 
 ## Testes e verificação
 
 ```bash
-uv run pytest                                    # 26 passed
+uv run pytest                                    # toda a suíte
 uv run pytest tests/test_parakeet_bootstrap.py   # só o bootstrap
-uv run ruff check server.py parakeet_bootstrap.py orelhIA/ tests/   # limpo
-uv run mypy server.py parakeet_bootstrap.py                          # limpo
+uv run ruff check server.py parakeet_bootstrap.py orelhIA/ tests/
+uv run mypy server.py parakeet_bootstrap.py orelhIA/
 uv run python -m orelhIA.cli --health                                # api real do backend
 ```
 
-O que os testes cobrem de fato: 26 casos unitários de `parakeet_bootstrap` (detecção de plataforma/distro, Docker, imagem, container, idempotência, callbacks) e 9 regressões de `server.py` (cache, limites e VAD mono/estéreo), com respostas simuladas, sem rede e sem Docker. Não há CI configurada. A integração real continua manual: subir o backend, `--health`, transcrever um arquivo e conferir `get_metrics`.
+Os testes usam respostas simuladas, sem rede e sem Docker: cobrem o bootstrap (plataforma/distro, Docker, imagem, container, idempotência), o cache LRU (chave, limites, hit/miss), o VAD (mono/estéreo, padding, falhas de escrita), o guard SSRF, `transcribe_file`, `transcribe_url` e `record_audio`. Não comprovam Docker, o modelo Parakeet, GPU nem microfone reais; essa integração continua manual: subir o backend, `--health`, transcrever um arquivo e conferir `get_metrics`. O workflow `.github/workflows/ci.yml` roda lint, mypy e pytest a cada push e PR.
 
 ## Estado atual e limitações
 
 - O repositório não inclui Dockerfile nem receita de build da imagem do backend. O `parakeet_bootstrap` assume que a imagem já existe na máquina; um `docker pull` do nome padrão (`parakeet-tdt:ptbr-cpu`) falha, porque não há registry público com esse nome. Use `--image`/`--container`/`--port` (ou os parâmetros do `bootstrap_parakeet`) para a imagem que você tiver.
-- Sem CI no GitHub (nenhum workflow no repositório).
 - Transcreve o arquivo completo; não há streaming nem transcrição incremental.
 - `preprocess="vad"` só atua em WAV PCM 16-bit; para outros formatos o VAD é ignorado com log.
 - `record_audio` depende do PyAudio (extra `record`) e de um dispositivo de entrada; sem fala, o texto volta vazio.
@@ -219,11 +221,3 @@ O que os testes cobrem de fato: 26 casos unitários de `parakeet_bootstrap` (det
 ## Licença
 
 MIT, veja [`LICENSE`](LICENSE). Créditos: Parakeet TDT 0.6B v3 (NVIDIA NeMo), fine-tune pt-BR TAGARELA ([Alefiury](https://huggingface.co/alefiury)), [Speaches](https://github.com/speaches-ai/speaches), [MCP](https://modelcontextprotocol.io).
-
-## Validação de cache e áudio (2026-09-30)
-
-A chave do cache inclui backend, modelo, idioma, formato, pré-processamento e parâmetros do VAD. A leitura do áudio para o hash ocorre em blocos, e arquivos acima do limite são rejeitados antes dessa leitura. Respostas do cache preservam o caminho do arquivo atual e os metadados de modelo/pré-processamento.
-
-O VAD preserva a última janela parcial e une intervalos com padding sobreposto, evitando repetir amostras. Arquivos temporários são removidos também quando o backend gera um erro inesperado.
-
-`uv run pytest` passa 35 testes offline de bootstrap, cache e WAV mono/estéreo; `uv run ruff check .` e `uv run mypy server.py` validam o código. Esses testes usam respostas simuladas e não comprovam Docker, modelo Parakeet, GPU ou microfone em execução.
